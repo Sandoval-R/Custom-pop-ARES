@@ -113,12 +113,14 @@ def run_d2b_case(beta):
     pars.update(pop_pars)
 
     # Override the factory defaults explicitly.
-    pars["pop_zform"] = Z_INITIAL
-    pars["pop_zdead"] = Z_FINAL
-    pars["first_light_redshift"] = Z_INITIAL
+    pars["pop_zform"] = Z_INITIAL +1.0
+    pars["pop_zdead"] = 0
+    pars["first_light_redshift"] = Z_INITIAL + 1.0
+    pars["include_He"] = True
 
     pars["solver_atol"] = 1e-12
     pars["solver_rtol"] = 1e-10
+    pars["max_timestep"] = 0.1
 
     pars.update(PBH_SOURCE_FLAGS)
 
@@ -170,9 +172,9 @@ def run_hektor_case(beta, f_pbh=F_PBH):
 
     pars.update(pop_pars)
 
-    pars["pop_zform"] = Z_INITIAL
-    pars["pop_zdead"] = Z_FINAL
-    pars["first_light_redshift"] = Z_INITIAL
+    pars["pop_zform"] = Z_INITIAL + 1.0
+    pars["pop_zdead"] = 0
+    pars["first_light_redshift"] = Z_INITIAL + 1.0
 
     pars["solver_atol"] = 1e-12
     pars["solver_rtol"] = 1e-10

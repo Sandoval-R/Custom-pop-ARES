@@ -17,7 +17,17 @@ from ares.util.ParameterFile import get_pq_pars
 from ares.phenom.ParameterizedQuantity import ParameterizedQuantity
 from scipy.interpolate import interp1d
 
+_installed = False
+
 def install_stateful_callbacks():
+    """
+    Install the patch once
+    """
+    global _installed
+    if _installed:
+        return
+    _installed = True
+
     ParametricPopulation = _param_mod.ParametricPopulation  # ARES population
     GlobalVolume = _vg_mod.GlobalVolume                     # THE Global Volume calculation 
 

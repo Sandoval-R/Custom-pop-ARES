@@ -49,7 +49,7 @@ PBH_SOURCE_FLAGS = dict(
 # ---------------------------------------------------------------------------
 # Core driver
 # ---------------------------------------------------------------------------
-Z_INITIAL = 60 # ARES can handle up to 400 without problems
+Z_INITIAL = 300 # ARES can handle up to 400 without problems
 Z_FINAL = 6.0
 
 def run_case(M_PBH_Msun=10.0, f_PBH=9.76e-3, lam=0.01, beta=0.2, f_E=0.15, sed_path=DEFAULT_SED_PATH, extra_ares_kwargs=None, return_sim=False):
@@ -70,8 +70,10 @@ def run_case(M_PBH_Msun=10.0, f_PBH=9.76e-3, lam=0.01, beta=0.2, f_E=0.15, sed_p
     pars['problem_type'] = 100 # Clean universe
     pars['verbose'] = False
     pars.update(pop_pars)
-    pars['pop_zform'] = 1000 # When the PBH appear, not sure exactly what it affects yet, currently testing
-    pars['first_light_redshift'] = Z_INITIAL # When the PBH start evolving
+    pars['pop_zform'] = Z_INITIAL + 1.0
+    pars['first_light_redshift'] = Z_INITIAL + 1.0
+    pars['pop_zdead'] = 0.0
+    pars['include_He'] = True
     pars['solver_atol'] = 1e-12
     pars['solver_rtol'] = 1e-10
     pars.update(PBH_SOURCE_FLAGS)

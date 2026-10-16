@@ -18,6 +18,7 @@ RY_EEV = 13.6 # Hydrogen ionization energy [eV]
 MU_NEUTRAL = 1.22 # Mean molecular weight
 GAMMA_AD = 5.0 / 3.0 # Adiabatic index
 DEFAULT_MDOT_CRIT = 1.0e-2 # Critical value for dot{m}
+L_EDD_PER_MSUN = 1.3e38 # Hektor's L_Edd / M [erg/s/Msun], below Eq. (2)
 
 # ---------------------------------------------------------------------------
 # Importing the SED
@@ -70,6 +71,15 @@ class ADAFTemplate:
         return out
 
 
+class ConstantMass:
+    """M_PBH(z) = M for all z [Msun]: Hektor's model, no cloud absorption."""
+    def __init__(self, M_Msun):
+        self.M_Msun = float(M_Msun)
+
+    def __call__(self, z):
+        return self.M_Msun
+
+
 # ---------------------------------------------------------------------------
 # PBH accretion model
 # ---------------------------------------------------------------------------
@@ -84,6 +94,7 @@ class PBHAccretionModel:
         mdot_crit = DEFAULT_MDOT_CRIT,
         cosm_kwargs = None,
         sed_path = DEFAULT_SED_PATH,
+        mass_history = None, # M_PBH(z) [Msun]; constant M_PBH_Msun if None
     ):
         # Validation of parameters
         if M_PBH_Msun <= 0:
@@ -100,8 +111,11 @@ class PBHAccretionModel:
             raise ValueError("mdot_crit must be > 0.")
 
         # Storing parameters
-        self.M_PBH = float(M_PBH_Msun)
-        self.M_PBH_g = self.M_PBH * MSUN_G
+        #self.M_PBH = float(M_PBH_Msun)
+        #self.M_PBH_g = self.M_PBH * MSUN_G
+        self.M_seed = float(M_PBH_Msun)
+        self.mass_history = (ConstantMass(self.M_seed) if mass_history is None
+                             else mass_history)
         self.f_PBH = float(f_PBH)
         self.lam = float(lam)
         self.beta = float(beta)
@@ -114,14 +128,19 @@ class PBHAccretionModel:
 
         self.template = ADAFTemplate(sed_path)
 
-        # Eq. (2): L_Edd in erg/s
+
+        # Mass
+    def M_PBH(self, z):
+        """Instantaneous PBH mass [Msun]."""
+        return float(self.mass_history(z))
+
+    def L_Edd(self, z):
         """
-        Might change it for the complete
-        L_{Edd} = 4*pi*G*M*m_p*c / sigma_T
-        with sigma_T begin Thomson scattering cross section (6.6525 times 10^{-25}) cm^2
-        But this is the value Hektor fives below it's second equation
+        Eq. (2): L_Edd in erg/s, the value Hektor gives below Eq. (2),
+        rather than the full 4 pi G M m_p c / sigma_T.
         """
-        self.L_Edd = 1.3e38 * self.M_PBH
+        return L_EDD_PER_MSUN * self.M_PBH(z)
+
 
     # Densities
     def n_B(self, z):
@@ -134,10 +153,11 @@ class PBHAccretionModel:
         return self.cosm.nH(z)
 
     def n_PBH(self, z):
-        """Proper PBH number density [cm^-3], Eq. (4)."""
+        """Proper PBH number density [cm^-3], Eq. (4), from the seed mass.
+        Still unsure about having it evolve with M(z)."""
         rho_cdm0 = self.cosm.omega_cdm_0 * self.cosm.CriticalDensity(0.0) # DM mass today
         rho_pbh = self.f_PBH * rho_cdm0 * (1.0 + z) ** 3
-        return rho_pbh / self.M_PBH_g
+        return rho_pbh / (self.M_seed * MSUN_G)
 
     # -- Accretion physics ----------------------------------------------
     def sound_speed_km_s(self, Tk):
@@ -173,7 +193,7 @@ class PBHAccretionModel:
         nB = self.n_B(z)
         veff = self.v_eff_km_s(z, Tk)
         return (
-            8.0e-7 * self.lam * (self.M_PBH / 10.0)
+            8.0e-7 * self.lam * (self.M_PBH(z) / 10.0)
             * (nB / 1.0) * (veff / 10.0) ** -3.0
         )
 
@@ -190,7 +210,7 @@ class PBHAccretionModel:
         L = L_Edd * mdot * (mdot/mdot_crit)^beta -- Eq. (2) integrated."""
         m = self.mdot(z, Tk)
         eta = self.efficiency(z, Tk)
-        return self.L_Edd * m * (eta / 0.1)
+        return self.L_Edd(z) * m * (eta / 0.1)
 
     def L_E(self, E_eV, z, Tk):
         """
@@ -247,6 +267,58 @@ class PBHAccretionModel:
         ion_rate_density = f_ion * self.epsilon(z, Tk) / (RY_EEV * erg_per_ev)
         return ion_rate_density / self.n_HI(z, xe)
 
+#---
+def make_stateful_callbacks(model, Tk_of_z=None, xe_of_z=None):
+    """
+    ARES heating and ionization callbacks reading the live IGM state, which
+    hektor_ares_patch forwards to callbacks marked _ares_stateful.
+
+    ARES passes igm_Tk and igm_h_1 but not igm_e, so x_e is the hydrogen
+    ionization state 1 - igm_h_1.  Tk_of_z and xe_of_z serve direct calls
+    outside ARES; without them a call lacking the live state is an error
+    rather than a silent fallback.
+    """
+    def live_state(z, kwargs):
+        Tk = kwargs.get('igm_Tk')
+        if Tk is None:
+            if Tk_of_z is None:
+                raise RuntimeError('PBH callback called without igm_Tk at '
+                    'z = {:g}.'.format(z))
+            Tk = Tk_of_z(z)
+
+        h1 = kwargs.get('igm_h_1')
+        if h1 is not None:
+            xe = 1.0 - h1
+        elif xe_of_z is not None:
+            xe = xe_of_z(z)
+        else:
+            raise RuntimeError('PBH callback called without igm_h_1 at '
+                'z = {:g}.'.format(z))
+        return float(Tk), float(xe)
+
+    # ARES asks for a coefficient per absorbing species (0 = HI, 1 = HeI,
+    # 2 = HeII) and multiplies each by that species' density.  Hektor's
+    # deposition is all charged to HI: heat (1+2x_e)/3 warms all the gas
+    # through ARES's heat capacity, ionization (1-x_e)/3 goes to hydrogen.
+    # The helium species get nothing, or the energy would count twice.
+    def heat_rate(z, species=0, **kwargs):
+        """ARES heat-rate callback [erg/s per neutral H atom]."""
+        if species != 0:
+            return 0.0
+        return model.heat_rate_coefficient(z, *live_state(z, kwargs))
+
+    def ion_rate_igm(z, species=0, **kwargs):
+        """ARES ionization callback [1/s per neutral H atom]."""
+        if species != 0:
+            return 0.0
+        return model.ion_rate_coefficient(z, *live_state(z, kwargs))
+
+    # The runtime ARES adapter checks this marker before forwarding the live
+    # IGM state into the callback.
+    heat_rate._ares_stateful = True
+    ion_rate_igm._ares_stateful = True
+    return heat_rate, ion_rate_igm
+
 
 # ---------------------------------------------------------------------------
 # ARES ParametricPopulation adapter
@@ -255,52 +327,15 @@ def make_pbh_population(
     M_PBH_Msun=10.0, f_PBH=1.0, lam=0.01, beta=0.2, f_E=0.15,
     mdot_crit=DEFAULT_MDOT_CRIT, Tk_of_z=None, xe_of_z=None,
     cosm_kwargs=None, sed_path=DEFAULT_SED_PATH, pop_extra=None,
+    mass_history=None,
 ):
     model = PBHAccretionModel(
         M_PBH_Msun=M_PBH_Msun, f_PBH=f_PBH, lam=lam, beta=beta, f_E=f_E,
         mdot_crit=mdot_crit, cosm_kwargs=cosm_kwargs, sed_path=sed_path,
+        mass_history=mass_history,
     )
 
-  #--Fallbacks--
-    if Tk_of_z is None:
-        Tk_of_z = model.cosm.Tgas   # fallback for direct calls outside ARES
-
-    if xe_of_z is None:
-        def xe_of_z(z, **kw):
-            h1 = kw.get('igm_h_1')
-            if h1 is not None:
-                return 1.0 - h1
-            return 2.0e-4  # fallback for direct calls outside ARES
-        # Standard cosmological residual free-electron fraction after recombination PENDIENTE
-
-    def heat_rate(z, **kwargs):
-        """ARES heat-rate callback; uses the live IGM state when supplied."""
-        Tk = kwargs.get('igm_Tk')
-        if Tk is None:
-            Tk = Tk_of_z(z)
-
-        xe = kwargs.get('igm_e')
-        if xe is None:
-            xe = xe_of_z(z)
-
-        return model.heat_rate_coefficient(z, float(Tk), float(xe))
-
-    def ion_rate_igm(z, **kwargs):
-        """ARES ionization callback; uses the live IGM state when supplied."""
-        Tk = kwargs.get('igm_Tk')
-        if Tk is None:
-            Tk = Tk_of_z(z)
-
-        xe = kwargs.get('igm_e')
-        if xe is None:
-            xe = xe_of_z(z)
-
-        return model.ion_rate_coefficient(z, float(Tk), float(xe))
-
-    # The runtime ARES adapter checks this marker before forwarding the live
-    # IGM state into the callback.
-    heat_rate._ares_stateful = True
-    ion_rate_igm._ares_stateful = True
+    heat_rate, ion_rate_igm = make_stateful_callbacks(model, Tk_of_z, xe_of_z)
 
     pars = dict(
         pop_sfr_model='hektor2018',

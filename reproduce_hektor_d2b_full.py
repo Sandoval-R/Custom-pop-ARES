@@ -42,7 +42,7 @@ PBH_SOURCE_FLAGS = dict(
 # ---------------------------------------------------------------------------
 def add_pbh_population(base_pars, pop_id, M_PBH_Msun=1e5, f_PBH=9.76e-3,
                         lam=0.01, beta=0.2, f_E=0.15, sed_path=DEFAULT_SED_PATH,
-                        cosm_kwargs=None):
+                        cosm_kwargs=None, z_start=None):
     """
     Bolt the Hektor PBH source on as an ADDITIONAL population in an already-existing multi-population ARES run, instead of replacing whatever `base_pars` already sets up. Useful for the full run.
 
@@ -64,11 +64,17 @@ def add_pbh_population(base_pars, pop_id, M_PBH_Msun=1e5, f_PBH=9.76e-3,
         sed_path=sed_path,
     )
 
+    if z_start is None:
+        z_start = base_pars['initial_redshift']
+    pop_pars.update(pop_zform=z_start + 1.0, pop_zdead=0.0)
+
     merged = dict(base_pars)  # copy, don't mutate caller's dict
     for key, val in pop_pars.items():
         merged[f'{key}{{{pop_id}}}'] = val
     for key, val in PBH_SOURCE_FLAGS.items():
         merged[f'{key}{{{pop_id}}}'] = val
+
+    merged['first_light_redshift'] = z_start + 1.0
 
     return merged, model
 
@@ -79,11 +85,19 @@ def add_pbh_population(base_pars, pop_id, M_PBH_Msun=1e5, f_PBH=9.76e-3,
 Z_INITIAL = 400
 Z_FINAL = 6.0
 
-def run_full_case(f_PBH=1.0, M_PBH_Msun=10.0, lam=0.01, beta=0.2, f_E=0.15, pop_id=3, outpath=os.path.join(OUTPUT_DIR, 'hektor_full_reproduction.png'),):
+def run_full_case(f_PBH=1.0, M_PBH_Msun=10.0, lam=0.01, beta=0.2, f_E=0.15, pop_id=None, outpath=os.path.join(OUTPUT_DIR, 'hektor_full_reproduction.png'),):
     from ares.util.ProblemTypes import ProblemType
 
     base_pars = ProblemType(101) # Default ARES run, comes with 3 populations
+
+    # -- Cleaner way to add population instead of replace --
+    if pop_id is None:
+        # The next id after ARES's own galaxy populations, read off the tags.
+        pop_id = 1 + max(int(key[key.rindex('{') + 1:-1])
+            for key in base_pars if key.endswith('}'))
+
     base_pars['first_light_redshift'] = Z_INITIAL
+    base_pars['include_He'] = False # For full runs it doesn't work properly :c
     base_pars['solver_atol'] = 1e-12
     base_pars['solver_rtol'] = 1e-10
     base_pars['verbose'] = False
