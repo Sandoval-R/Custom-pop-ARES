@@ -11,13 +11,13 @@ from hektor_pbh_ares import (
     DEFAULT_SED_PATH,
     make_stateful_callbacks,
 )
-from d2b_model import DarkToBlack
+from d2b_model import Mass_analytic
 
 
 SEC_PER_YR = 365.25 * 24.0 * 3600.0
 
 # PBHAccretionModel inherits from HektorPBHAccretionModel
-# Thas is, I will access Hektor's parameters with super()
+# That is, I will access Hektor's parameters with super()
 class PBHAccretionModel(HektorPBHAccretionModel):
     """Hektor PBH model with an optional Dark-to-Black mass history."""
 
@@ -72,45 +72,15 @@ class PBHAccretionModel(HektorPBHAccretionModel):
         if self.d2b_z_start <= self.d2b_z_end:
             raise ValueError("d2b_z_start must be greater than d2b_z_end.")
 
-        # ARES provides the cosmological time-redshift relation.  D2B itself remains entirely in the tested time-domain implementation.
-        self.d2b_t0_yr = float(
-            self.cosm.t_of_z(self.d2b_z_start) / SEC_PER_YR
+        # The draft's closed-form M_PBH(z), starting at d2b_z_start.
+        self.d2b = Mass_analytic(
+            self.M_seed, d2b_Mcloud_Msun, d2b_mu_eV, self.d2b_z_start,
+            self.cosm,
         )
-        self.d2b_tend_yr = float(
-            self.cosm.t_of_z(self.d2b_z_end) / SEC_PER_YR
-        )
-
-        self.d2b = DarkToBlack(
-            mu_eV=d2b_mu_eV,
-            Mbh0=self.M_seed,
-            Mc0=d2b_Mcloud_Msun,
-            t0_yr=self.d2b_t0_yr, # z_initial in years
-            t_end_yr=self.d2b_tend_yr,
-            cloud_floor=d2b_cloud_floor_Msun,
-            rtol=d2b_rtol,
-            atol=d2b_atol,
-            method=d2b_method,
-        )
-
-        # solve() builds the adaptive dense solution used by state_at().
-        history = self.d2b.solve(n_output=2)
-        self.t_depletion_yr = history["t_depletion_yr"]
-
-        if self.t_depletion_yr is not None:
-            self.z_depletion = float(
-                self.cosm.z_of_t(self.t_depletion_yr * SEC_PER_YR)
-            )
+        self.z_depletion = self.d2b.z_depletion
 
         # n_PBH keeps using the seed mass; the D2B mass drives Bondi accretion and L_Edd.
-        self.mass_history = self._d2b_mass
-
-    # ------------------------------------------------------------------
-    # D2B -> Hektor integration
-    # ------------------------------------------------------------------
-    def _d2b_mass(self, z):
-        """Instantaneous D2B PBH mass [Msun]."""
-        t_yr = np.asarray(self.cosm.t_of_z(z), dtype=float) / SEC_PER_YR
-        return self.d2b.state_at(t_yr)["Mbh"]
+        self.mass_history = self.d2b
 
 # ---------------------------------------------------------------------------
 # ARES population factory

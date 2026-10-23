@@ -7,18 +7,24 @@ Hektor+D2B population (the cloud raises M_PBH(z), and so the Bondi
 accretion) and, for comparison, the plain Hektor population with the same
 seed mass and no cloud.
 
-The D2B mass history comes from d2b_mass_history.py (closed form), not from
-hektor_d2b_ares.py: d2b_model.DarkToBlack stops on rows 0 and 9 with
-"Required step size is less than spacing between numbers".  It plugs into
-the base model through mass_history.
+The D2B mass history is d2b_model.Mass_analytic, the closed-form
+M_PBH(z) of the twentyoneSMBH draft (M_c held at M_c0, capped at
+M_0 + M_c0), which plugs into the base model through mass_history.
 
 Usage:
     python reproduce_hektor_d2b_table1.py full        # ARES runs of all 11 rows
+    python reproduce_hektor_d2b_table1.py signal      # global 21-cm signal
     python reproduce_hektor_d2b_table1.py masses  # M_PBH(z) plot, no ARES
 
-masses compares M_PBH(z) of the exact history with Eq. (9) of the
-twentyoneSMBH draft (DraftEq9MassHistory: M_c held at M_c0 in the
-integral, capped at M_0 + M_c0) and writes table1_mass.png.
+full runs the PBHs alone (problem type 100) and plots Tk(z).  These runs
+have no Lyman-alpha source, so Ts stays near T_CMB and their dTb is ~0.
+
+signal runs the same rows as Full runs: ARES's standard galaxies (problem
+type 101, default parameters, helium off) plus the PBHs, and a galaxies-only
+reference.  It writes the global signal dTb(z) (table1_signal.png) and the
+depth and redshift of each absorption trough (table1_signal.csv).
+
+masses plots M_PBH(z) of every row and writes table1_mass.png.
 """
 import argparse
 import csv
@@ -31,7 +37,7 @@ import ares
 
 from hektor_pbh_ares import make_pbh_population, DEFAULT_SED_PATH
 from hektor_ares_patch import install_stateful_callbacks
-from d2b_mass_history import D2BMassHistory, DraftEq9MassHistory
+from d2b_model import Mass_analytic
 
 
 DEFAULT_COSM_KWARGS = dict(
@@ -43,7 +49,7 @@ DEFAULT_COSM_KWARGS = dict(
 # CONFIGURATION
 # ============================================================================
 
-BETA = 0.6            # Fixed for every run
+BETA = 0.2            # Fixed for every run
 # Seed fraction of dark matter, the same for every row.
 F_PBH = 1e-5
 LAMBDA = 0.01         # Hektor accretion parameter
@@ -67,8 +73,13 @@ TABLE1 = [
 
 Z_SEED = 1090.0       # Clouds start being absorbed at recombination (ADR-0003)
 Z_INITIAL = 400.0
+# Full runs start lower: with ARES's galaxies (and their CGM phase) runs fail
+# above z ~ 375.  300 is the start of the ares_git stage-2 Full runs.
+Z_INITIAL_FULL = 300.0
 Z_FINAL = 5.0
 Z_REPORT = 17.2       # Redshift at which Tk is printed
+Z_TROUGH_MAX = 40.0   # The absorption trough is searched for below this z
+GALAXY_PROBLEM_TYPE = 101
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "results", "table1")
@@ -87,27 +98,51 @@ PBH_SOURCE_FLAGS = dict(
 # ARES RUN
 # ============================================================================
 
-def run_ares(pop_pars):
-    """Run one PBH-only history and return z, Tk, xe, dTb."""
-    pars = dict(DEFAULT_COSM_KWARGS)
-    pars["problem_type"] = 100
-    pars["verbose"] = False
-    pars.update(pop_pars)
+def galaxy_population_count():
+    """Problem type 101's galaxy populations are tagged {0}..{n-1}; the PBHs
+    become population n."""
+    from ares.util.ProblemTypes import ProblemType
+    ids = [int(key[key.rindex("{") + 1:-1])
+           for key in ProblemType(GALAXY_PROBLEM_TYPE) if key.endswith("}")]
+    return max(ids) + 1
+
+
+def run_ares(pop_pars, full=False):
+    """
+    Run one history and return z, Tk, xe, dTb: the PBHs alone, or with
+    full=True, a Full run (ARES's galaxies plus the PBHs).
+    """
+    z_initial = Z_INITIAL_FULL if full else Z_INITIAL
 
     # Switch the PBHs on just above the start and never off.
-    pars["pop_zform"] = Z_INITIAL + 1.0
-    pars["pop_zdead"] = 0.0
-    pars["first_light_redshift"] = Z_INITIAL + 1.0
-    pars["include_He"] = True
+    pbh = dict(pop_pars)
+    pbh["pop_zform"] = z_initial + 1.0
+    pbh["pop_zdead"] = 0.0
+    pbh.update(PBH_SOURCE_FLAGS)
+
+    pars = dict(DEFAULT_COSM_KWARGS)
+    pars["verbose"] = False
+    pars["progress_bar"] = False
+    if full:
+        # The galaxies keep their own defaults, pop_zform (60) included.
+        pop_id = galaxy_population_count()
+        pars["problem_type"] = GALAXY_PROBLEM_TYPE
+        pars.update({f"{key}{{{pop_id}}}": val for key, val in pbh.items()})
+    else:
+        pars["problem_type"] = 100
+        pars.update(pbh)
+    pars["first_light_redshift"] = z_initial + 1.0
+    # Helium makes problem type 101's galaxies stall (ADR-0004 in ares_git).
+    pars["include_He"] = not full
 
     pars["solver_atol"] = 1e-12
     pars["solver_rtol"] = 1e-10
-    # ARES holds the rates fixed over a step; 0.1 Myr resolves a sudden
-    # cloud depletion in cold gas (ticket 16 in ares_git).
-    pars["max_timestep"] = 0.1
+    # ARES holds the rates fixed over a step; 0.01 Myr resolves a sudden
+    # cloud depletion in cold gas (row 8: 0.1 Myr overshoots to 46 553 K,
+    # 0.01 Myr gives 12 722.6 K; ticket 16 in ares_git).
+    pars["max_timestep"] = 0.01
 
-    pars.update(PBH_SOURCE_FLAGS)
-    pars["initial_redshift"] = Z_INITIAL
+    pars["initial_redshift"] = z_initial
     pars["final_redshift"] = Z_FINAL
 
     sim = ares.simulations.Global21cm(**pars)
@@ -123,12 +158,12 @@ def run_ares(pop_pars):
     return z, Tk, xe, dTb
 
 
-def d2b_history(mu_eV, M_seed, M_cloud, model=D2BMassHistory):
+def d2b_history(mu_eV, M_seed, M_cloud):
     cosm = ares.physics.Cosmology(**DEFAULT_COSM_KWARGS)
-    return model(M_seed, M_cloud, mu_eV, Z_SEED, cosm)
+    return Mass_analytic(M_seed, M_cloud, mu_eV, Z_SEED, cosm)
 
 
-def run_case(M_seed, f_pbh=F_PBH, mass_history=None):
+def run_case(M_seed, f_pbh=F_PBH, mass_history=None, full=False):
     """Hektor's model; with a mass_history, Hektor + D2B."""
     pop_pars, model = make_pbh_population(
         M_PBH_Msun=M_seed,
@@ -139,7 +174,7 @@ def run_case(M_seed, f_pbh=F_PBH, mass_history=None):
         sed_path=DEFAULT_SED_PATH,
         mass_history=mass_history,
     )
-    return run_ares(pop_pars)
+    return run_ares(pop_pars, full=full)
 
 
 def Tk_at(z, Tk, z0=Z_REPORT):
@@ -147,33 +182,41 @@ def Tk_at(z, Tk, z0=Z_REPORT):
     return float(np.interp(z0, z[order], Tk[order]))
 
 
+def trough(z, dTb):
+    """Depth [mK] and redshift of the absorption trough at z <= Z_TROUGH_MAX,
+    or (nan, nan) if the signal is in emission throughout."""
+    low = z <= Z_TROUGH_MAX
+    i = np.argmin(dTb[low])
+    if dTb[low][i] >= 0.0:
+        return np.nan, np.nan
+    return float(dTb[low][i]), float(z[low][i])
+
+
 # ============================================================================
 # MAIN
 # ============================================================================
 
 def plot_masses(rows):
-    """M_PBH(z) / M_0 of the exact history (solid) and Eq. (9) (dotted)."""
+    """M_PBH(z) / M_0 of every row, from the draft's expression."""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     fig, ax = plt.subplots(figsize=(7, 5.5))
     colors = plt.cm.viridis(np.linspace(0.0, 0.9, len(rows)))
     z = np.logspace(np.log10(Z_FINAL), np.log10(Z_INITIAL), 3000)
-    print(f"{'row':>3} {'q':>8} {'z_dep exact':>12} {'z_dep Eq9':>10}")
+    print(f"{'row':>3} {'q':>8} {'z_dep':>10}")
     for color, i in zip(colors, rows):
         mu, M_seed, M_cloud, _ = TABLE1[i]
-        exact = d2b_history(mu, M_seed, M_cloud)
-        eq9 = d2b_history(mu, M_seed, M_cloud, DraftEq9MassHistory)
-        ax.plot(z, exact(z) / M_seed, color=color, lw=1.6, label=f"#{i}, "
+        history = d2b_history(mu, M_seed, M_cloud)
+        ax.plot(z, history(z) / M_seed, color=color, lw=1.6, label=f"#{i}, "
                 f"q = {M_cloud / M_seed:.3g}")
-        ax.plot(z, eq9(z) / M_seed, color=color, lw=1.6, ls=":")
-        fmt = lambda zd: "none" if zd is None else f"{zd:.3f}"
-        print(f"{i:>3} {M_cloud / M_seed:>8.4g} {fmt(exact.z_depletion):>12} "
-              f"{fmt(eq9.z_depletion):>10}")
+        z_dep = history.z_depletion
+        z_dep = "none" if z_dep is None else f"{z_dep:.3f}"
+        print(f"{i:>3} {M_cloud / M_seed:>8.4g} {z_dep:>10}")
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlim(Z_FINAL, Z_INITIAL)
     ax.set_xlabel("z")
     ax.set_ylabel(r"$M_{\rm PBH}(z) / M_0$")
-    ax.set_title("D2B mass history: exact (solid) vs draft Eq. (9) (dotted)")
+    ax.set_title("D2B mass history (twentyoneSMBH draft)")
     ax.legend(fontsize=6)
     fig.tight_layout()
     path = os.path.join(OUTPUT_DIR, "table1_mass.png")
@@ -182,24 +225,25 @@ def plot_masses(rows):
     print(f"Saved: {path}")
 
 
-def main(rows):
+def check_budget(rows):
     for i in rows:
         _, M_seed, M_cloud, _ = TABLE1[i]
         if F_PBH * (1.0 + M_cloud / M_seed) > 1.0:
             raise ValueError(f"row {i}: f_PBH (1 + M_c,0/M_BH,0) = "
                 f"{F_PBH * (1.0 + M_cloud / M_seed):.3g} > 1 (ADR-0001)")
 
+
+def main(rows):
+    check_budget(rows)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     install_stateful_callbacks()
 
     fig, ax = plt.subplots(figsize=(7, 5.5))
-    fig_gs, ax_gs = plt.subplots(figsize=(7, 5.5))
     colors = plt.cm.viridis(np.linspace(0.0, 0.9, len(rows)))
 
     # LambdaCDM baseline: no PBHs.
-    z0, Tk0, _, dTb0 = run_case(M_seed=10.0, f_pbh=0.0)
+    z0, Tk0, _, _ = run_case(M_seed=10.0, f_pbh=0.0)
     ax.plot(z0, Tk0, color="k", lw=2, label=r"$\Lambda$CDM")
-    ax_gs.plot(z0, dTb0, color="k", lw=2, label=r"$\Lambda$CDM")
     summary = [dict(row="LCDM", Tk_report_d2b_K=Tk_at(z0, Tk0))]
 
     hektor_cache = {}  # Several rows share a seed mass
@@ -230,19 +274,17 @@ def main(rows):
         label = (fr"#{i}: $\mu$={mu:.1e}, $M_0$={M_seed:.0e}, "
                  fr"$M_c$={M_cloud:.0e}")
         ax.plot(z, Tk, color=color, lw=1.6, label=label)
-        ax_gs.plot(z, dTb, color=color, lw=1.6, label=label)
         np.savetxt(os.path.join(OUTPUT_DIR, f"row{i:02d}_d2b.txt"),
                    np.column_stack([z, Tk, xe, dTb]),
                    header="z Tk[K] xe dTb[mK]")
 
         if M_seed not in hektor_cache:
             hektor_cache[M_seed] = run_case(M_seed)
-        zh, Tkh, _, dTbh = hektor_cache[M_seed]
+        zh, Tkh, _, _ = hektor_cache[M_seed]
         rec["Tk_report_hektor_K"] = Tk_at(zh, Tkh)
         print(f"Tk(z={Z_REPORT}) Hektor = "
               f"{rec['Tk_report_hektor_K']:.4f} K")
         ax.plot(zh, Tkh, color=color, lw=0.9, ls="--", alpha=0.7)
-        ax_gs.plot(zh, dTbh, color=color, lw=0.9, ls="--", alpha=0.7)
 
         summary.append(rec)
 
@@ -275,28 +317,97 @@ def main(rows):
     path = os.path.join(OUTPUT_DIR, "table1_Tk.png")
     fig.savefig(path, dpi=150, bbox_inches="tight")
     print(f"Saved: {path}")
-
-    # dTb(z)
-    ax_gs.set_xlim(100, Z_FINAL)
-    ax_gs.set_xlabel("z")
-    ax_gs.set_ylabel(r"$\delta T_b$ [mK]")
-    ax_gs.set_title(fr"Hektor + D2B global signal: $\beta={BETA}$")
-    ax_gs.legend(fontsize=6)
-    fig_gs.tight_layout()
-    path = os.path.join(OUTPUT_DIR, "table1_dTb.png")
-    fig_gs.savefig(path, dpi=150, bbox_inches="tight")
-    print(f"Saved: {path}")
-
     plt.close(fig)
-    plt.close(fig_gs)
+
+
+def main_signal(rows):
+    """Full runs (galaxies + PBHs) of every row: the global 21-cm signal."""
+    check_budget(rows)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    install_stateful_callbacks()
+
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    colors = plt.cm.viridis(np.linspace(0.0, 0.9, len(rows)))
+
+    # Galaxies only: no PBHs.
+    zg, _, _, dTbg = run_case(M_seed=10.0, f_pbh=0.0, full=True)
+    ax.plot(zg, dTbg, color="k", lw=2.2, label="galaxies only")
+    depth, z_tr = trough(zg, dTbg)
+    print(f"galaxies only: trough {depth:.1f} mK at z = {z_tr:.2f}")
+    summary = [dict(row="galaxies", trough_d2b_mK=depth, z_trough_d2b=z_tr)]
+    np.savetxt(os.path.join(OUTPUT_DIR, "signal_galaxies.txt"),
+               np.column_stack([zg, dTbg]), header="z dTb[mK]")
+
+    hektor_cache = {}  # Several rows share a seed mass
+
+    for color, i in zip(colors, rows):
+        mu, M_seed, M_cloud, _ = TABLE1[i]
+        print("\n" + "=" * 72)
+        print(f"row {i} (Full run): mu = {mu:.2e} eV, M_BH,0 = {M_seed:.1e} "
+              f"Msun, M_c,0 = {M_cloud:.1e} Msun, beta = {BETA}")
+        print("=" * 72)
+
+        history = d2b_history(mu, M_seed, M_cloud)
+        z, Tk, xe, dTb = run_case(M_seed, mass_history=history, full=True)
+        z_dep = history.z_depletion
+        depth, z_tr = trough(z, dTb)
+        rec = dict(row=i, mu_eV=mu, M_seed_Msun=M_seed, M_cloud_Msun=M_cloud,
+                   z_depletion=np.nan if z_dep is None else z_dep,
+                   trough_d2b_mK=depth, z_trough_d2b=z_tr)
+        print(f"depletion z = "
+              f"{'none before z = 0' if z_dep is None else f'{z_dep:.3f}'}")
+        print(f"D2B trough    = {depth:.1f} mK at z = {z_tr:.2f}")
+        label = (fr"#{i}: $\mu$={mu:.1e}, $M_0$={M_seed:.0e}, "
+                 fr"$M_c$={M_cloud:.0e}")
+        ax.plot(z, dTb, color=color, lw=1.6, label=label)
+        np.savetxt(os.path.join(OUTPUT_DIR, f"row{i:02d}_signal_d2b.txt"),
+                   np.column_stack([z, Tk, xe, dTb]),
+                   header="z Tk[K] xe dTb[mK]")
+
+        if M_seed not in hektor_cache:
+            hektor_cache[M_seed] = run_case(M_seed, full=True)
+        zh, _, _, dTbh = hektor_cache[M_seed]
+        rec["trough_hektor_mK"], rec["z_trough_hektor"] = trough(zh, dTbh)
+        print(f"Hektor trough = {rec['trough_hektor_mK']:.1f} mK at "
+              f"z = {rec['z_trough_hektor']:.2f}")
+        ax.plot(zh, dTbh, color=color, lw=0.9, ls="--", alpha=0.7)
+
+        summary.append(rec)
+
+    keys = ["row", "mu_eV", "M_seed_Msun", "M_cloud_Msun", "z_depletion",
+            "trough_d2b_mK", "z_trough_d2b", "trough_hektor_mK",
+            "z_trough_hektor"]
+    csv_path = os.path.join(OUTPUT_DIR, "table1_signal.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=keys, restval="")
+        writer.writeheader()
+        writer.writerows(summary)
+    print(f"\nSaved: {csv_path}")
+
+    ax.axhline(0.0, color="gray", lw=0.8)
+    ax.set_xlim(60, Z_FINAL)
+    ax.set_xlabel("z")
+    ax.set_ylabel(r"$\delta T_b$ [mK]")
+    ax.set_title(fr"Global 21-cm signal, galaxies + Hektor + D2B: "
+                 fr"$\beta={BETA}$, $f_{{\rm PBH}}={F_PBH}$, "
+                 fr"$\lambda={LAMBDA}$"
+                 + "\n(dashed: Hektor, same seed, no cloud)")
+    ax.legend(fontsize=6, loc="lower left")
+    fig.tight_layout()
+    path = os.path.join(OUTPUT_DIR, "table1_signal.png")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {path}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["full", "masses"],
+    parser.add_argument("mode", choices=["full", "signal", "masses"],
                         help="full: ARES runs of all rows, with the Hektor "
-                             "comparison; masses: M_PBH(z) of the exact "
-                             "history and Eq. (9), no ARES")
+                             "comparison; signal: the same as Full runs "
+                             "with ARES's galaxies, for the global 21-cm "
+                             "signal; masses: M_PBH(z) of every row, "
+                             "no ARES")
     args = parser.parse_args()
 
     if not os.path.exists(DEFAULT_SED_PATH):
@@ -305,5 +416,7 @@ if __name__ == "__main__":
     rows = list(range(len(TABLE1)))
     if args.mode == "masses":
         plot_masses(rows)
+    elif args.mode == "signal":
+        main_signal(rows)
     else:
         main(rows)

@@ -175,6 +175,7 @@ def run_hektor_case(beta, f_pbh=F_PBH):
     pars["pop_zform"] = Z_INITIAL + 1.0
     pars["pop_zdead"] = 0
     pars["first_light_redshift"] = Z_INITIAL + 1.0
+    pars["include_He"] = True
 
     pars["solver_atol"] = 1e-12
     pars["solver_rtol"] = 1e-10
