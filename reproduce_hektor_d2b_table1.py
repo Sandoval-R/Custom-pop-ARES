@@ -7,10 +7,6 @@ Hektor+D2B population (the cloud raises M_PBH(z), and so the Bondi
 accretion) and, for comparison, the plain Hektor population with the same
 seed mass and no cloud.
 
-The D2B mass history is d2b_model.Mass_analytic, the closed-form
-M_PBH(z) of the twentyoneSMBH draft (M_c held at M_c0, capped at
-M_0 + M_c0), which plugs into the base model through mass_history.
-
 Usage:
     python reproduce_hektor_d2b_table1.py full        # ARES runs of all 11 rows
     python reproduce_hektor_d2b_table1.py signal      # global 21-cm signal
@@ -21,8 +17,10 @@ have no Lyman-alpha source, so Ts stays near T_CMB and their dTb is ~0.
 
 signal runs the same rows as Full runs: ARES's standard galaxies (problem
 type 101, default parameters, helium off) plus the PBHs, and a galaxies-only
-reference.  It writes the global signal dTb(z) (table1_signal.png) and the
-depth and redshift of each absorption trough (table1_signal.csv).
+reference.  It writes the global signal dTb(z) of every row together
+(table1_signal.png), one figure per row with D2B on and off
+(table1_signal_rowNN.png), and the depth and redshift of each absorption
+trough (table1_signal.csv).
 
 masses plots M_PBH(z) of every row and writes table1_mass.png.
 """
@@ -71,11 +69,8 @@ TABLE1 = [
     (9.00e-20, 5e5, 1e9, 4.2e8),
 ]
 
-Z_SEED = 1090.0       # Clouds start being absorbed at recombination (ADR-0003)
+Z_SEED = 1090.0       # Clouds start being absorbed at recombination
 Z_INITIAL = 400.0
-# Full runs start lower: with ARES's galaxies (and their CGM phase) runs fail
-# above z ~ 375.  300 is the start of the ares_git stage-2 Full runs.
-Z_INITIAL_FULL = 300.0
 Z_FINAL = 5.0
 Z_REPORT = 17.2       # Redshift at which Tk is printed
 Z_TROUGH_MAX = 40.0   # The absorption trough is searched for below this z
@@ -112,11 +107,10 @@ def run_ares(pop_pars, full=False):
     Run one history and return z, Tk, xe, dTb: the PBHs alone, or with
     full=True, a Full run (ARES's galaxies plus the PBHs).
     """
-    z_initial = Z_INITIAL_FULL if full else Z_INITIAL
 
     # Switch the PBHs on just above the start and never off.
     pbh = dict(pop_pars)
-    pbh["pop_zform"] = z_initial + 1.0
+    pbh["pop_zform"] = Z_INITIAL + 1.0
     pbh["pop_zdead"] = 0.0
     pbh.update(PBH_SOURCE_FLAGS)
 
@@ -131,18 +125,16 @@ def run_ares(pop_pars, full=False):
     else:
         pars["problem_type"] = 100
         pars.update(pbh)
-    pars["first_light_redshift"] = z_initial + 1.0
+    pars["first_light_redshift"] = Z_INITIAL + 1.0
     # Helium makes problem type 101's galaxies stall (ADR-0004 in ares_git).
     pars["include_He"] = not full
 
     pars["solver_atol"] = 1e-12
     pars["solver_rtol"] = 1e-10
-    # ARES holds the rates fixed over a step; 0.01 Myr resolves a sudden
-    # cloud depletion in cold gas (row 8: 0.1 Myr overshoots to 46 553 K,
-    # 0.01 Myr gives 12 722.6 K; ticket 16 in ares_git).
+    # ARES holds the rates fixed over a step; 0.01 Myr resolves a sudden cloud depletion in cold gas.
     pars["max_timestep"] = 0.01
 
-    pars["initial_redshift"] = z_initial
+    pars["initial_redshift"] = Z_INITIAL
     pars["final_redshift"] = Z_FINAL
 
     sim = ares.simulations.Global21cm(**pars)
@@ -319,6 +311,47 @@ def main(rows):
     print(f"Saved: {path}")
     plt.close(fig)
 
+def plot_row_signal(i, galaxies, d2b, hektor, z_dep):
+    """
+    One row's global signal: galaxies only, + Hektor (D2B off) and
+    + Hektor + D2B (D2B on), each a pair (z, dTb), with the troughs marked
+    and the depletion redshift z_dep (None if the cloud lasts past z = 0).
+    """
+    mu, M_seed, M_cloud, _ = TABLE1[i]
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    curves = [
+        (galaxies, "galaxies only", "k", "-"),
+        (hektor, "+ Hektor, D2B off", "tab:blue", "--"),
+        (d2b, "+ Hektor + D2B, D2B on", "tab:red", "-"),
+    ]
+    for (z, dTb), name, color, ls in curves:
+        depth, z_tr = trough(z, dTb)
+        if np.isnan(depth):
+            name += ": no trough"
+        else:
+            name += f": {depth:.1f} mK at z = {z_tr:.1f}"
+            ax.plot(z_tr, depth, "o", color=color, ms=5)
+        ax.plot(z, dTb, color=color, ls=ls, lw=1.6, label=name)
+
+    if z_dep is not None and Z_FINAL < z_dep < 60.0:
+        ax.axvline(z_dep, color="tab:red", lw=0.8, ls=":",
+                   label=f"cloud depleted, z = {z_dep:.2f}")
+    ax.axhline(0.0, color="gray", lw=0.8)
+    ax.set_xlim(60, Z_FINAL)
+    ax.set_xlabel("z")
+    ax.set_ylabel(r"$\delta T_b$ [mK]")
+    ax.set_title(fr"Row {i}: $\mu$ = {mu:.2e} eV, $M_0$ = {M_seed:.0e}, "
+                 fr"$M_{{c,0}}$ = {M_cloud:.0e} $M_\odot$ "
+                 fr"($q$ = {M_cloud / M_seed:.3g})"
+                 + "\n" + fr"$\beta={BETA}$, $f_{{\rm PBH}}={F_PBH}$, "
+                 fr"$\lambda={LAMBDA}$")
+    ax.legend(fontsize=8, loc="lower left")
+    fig.tight_layout()
+    path = os.path.join(OUTPUT_DIR, f"table1_signal_row{i:02d}.png")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {path}")
+
 
 def main_signal(rows):
     """Full runs (galaxies + PBHs) of every row: the global 21-cm signal."""
@@ -372,6 +405,8 @@ def main_signal(rows):
               f"z = {rec['z_trough_hektor']:.2f}")
         ax.plot(zh, dTbh, color=color, lw=0.9, ls="--", alpha=0.7)
 
+        plot_row_signal(i, (zg, dTbg), (z, dTb), (zh, dTbh), z_dep)
+
         summary.append(rec)
 
     keys = ["row", "mu_eV", "M_seed_Msun", "M_cloud_Msun", "z_depletion",
@@ -402,16 +437,8 @@ def main_signal(rows):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["full", "signal", "masses"],
-                        help="full: ARES runs of all rows, with the Hektor "
-                             "comparison; signal: the same as Full runs "
-                             "with ARES's galaxies, for the global 21-cm "
-                             "signal; masses: M_PBH(z) of every row, "
-                             "no ARES")
+    parser.add_argument("mode", choices=["full", "signal", "masses"])
     args = parser.parse_args()
-
-    if not os.path.exists(DEFAULT_SED_PATH):
-        raise FileNotFoundError(f"Hektor SED not found: {DEFAULT_SED_PATH}")
 
     rows = list(range(len(TABLE1)))
     if args.mode == "masses":

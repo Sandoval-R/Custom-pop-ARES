@@ -35,17 +35,11 @@ D2B_MU_EV = 1.73e-20
 D2B_MC = 1.0e6       # initial scalar-cloud mass [Msun]
 
 D2B_Z_START = 400.0
-D2B_Z_END = 5.0
 
-D2B_CLOUD_FLOOR = 1.0e-15
-D2B_RTOL = 1.0e-9
-D2B_ATOL = 1.0e-12
-D2B_METHOD = "RK45"
 
-# ARES integration limits.  The D2B bridge is only defined between
-# D2B_Z_START and D2B_Z_END.
+# ARES integration limits.
 Z_INITIAL = D2B_Z_START
-Z_FINAL = D2B_Z_END
+Z_FINAL = 5.0
 
 # If True, also plot the original Hektor result as dashed curves.
 # This makes the effect of adding D2B immediately visible.
@@ -98,12 +92,7 @@ def run_d2b_case(beta):
         d2b_mu_eV=D2B_MU_EV,
         d2b_Mcloud_Msun=D2B_MC,
         d2b_z_start=D2B_Z_START,
-        d2b_z_end=D2B_Z_END,
         d2b_enabled=True,
-        d2b_cloud_floor_Msun=D2B_CLOUD_FLOOR,
-        d2b_rtol=D2B_RTOL,
-        d2b_atol=D2B_ATOL,
-        d2b_method=D2B_METHOD,
     )
 
     pars = dict(DEFAULT_COSM_KWARGS)
@@ -179,6 +168,7 @@ def run_hektor_case(beta, f_pbh=F_PBH):
 
     pars["solver_atol"] = 1e-12
     pars["solver_rtol"] = 1e-10
+    pars["max_timestep"] = 0.1
 
     pars.update(PBH_SOURCE_FLAGS)
 
@@ -303,7 +293,7 @@ def figure3():
                 print(f"D2B depletion z = {model.z_depletion:.6f}")
 
             M_start = float(model.M_PBH(D2B_Z_START))
-            M_end = float(model.M_PBH(D2B_Z_END))
+            M_end = float(model.M_PBH(Z_FINAL))
 
             print(f"M_BH(z=60)     = {M_start:.8e} Msun")
             print(f"M_BH(z=6)      = {M_end:.8e} Msun")
@@ -392,8 +382,6 @@ def figure3():
     ax.set_xscale("log")
     ax.set_yscale("log")
 
-    # The D2B/Ares history begins at z=60, so the actual calculated
-    # PBH curves occupy 6 <= z <= 60.
     ax.set_xlim(10, 1000)
     ax.set_ylim(1, 2.725 * 1000)
 

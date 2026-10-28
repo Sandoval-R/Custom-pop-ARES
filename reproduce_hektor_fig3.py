@@ -2,7 +2,7 @@
 Reproduce Hektor/ARES results, in a clean or a full universe.
 
 Joins reproduce_hektor.py (clean) and reproduce_hektor_full.py (full):
-    clean : problem_type 100, ONLY the Hektor PBH source, helium on, z_i = 300
+    clean : problem_type 100, ONLY the Hektor PBH source, helium on, z_i = 400
     full  : ProblemType(101), ARES's own galaxy populations plus the PBH
             source as an extra population, helium off, z_i = 400
 
@@ -165,6 +165,7 @@ def run_case(universe='clean', M_PBH_Msun=10.0, f_PBH=9.76e-3,
     pars['include_He'] = setup['include_He']
     pars['solver_atol'] = 1e-12
     pars['solver_rtol'] = 1e-10
+
     pars.update(dict(
         initial_redshift=z_initial,
         final_redshift=Z_FINAL,

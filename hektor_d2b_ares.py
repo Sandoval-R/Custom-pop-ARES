@@ -34,12 +34,7 @@ class PBHAccretionModel(HektorPBHAccretionModel):
         d2b_mu_eV=1.73e-17,
         d2b_Mcloud_Msun=0.0,
         d2b_z_start=60.0,
-        d2b_z_end=5.0,
         d2b_enabled=True, # For test verifying if the new accretion gives relevant results.
-        d2b_cloud_floor_Msun=1.0e-15,
-        d2b_rtol=1.0e-9,
-        d2b_atol=1.0e-12,
-        d2b_method="RK45",
     ):
         # Let the tested Hektor implementation initialize all of its accretion, SED, density, and ARES-related quantities unchanged.
         super().__init__(
@@ -54,23 +49,16 @@ class PBHAccretionModel(HektorPBHAccretionModel):
         )
 
         self.d2b_z_start = float(d2b_z_start)
-        self.d2b_z_end = float(d2b_z_end)
 
         # Condition for activating D2B accretion
         self.d2b_enabled = bool(d2b_enabled) and d2b_Mcloud_Msun > 0.0
 
         # Initialize attributes that are relevant for D2B. If it is off, the code can still read the None.
         self.d2b = None
-        self.d2b_t0_yr = None
-        self.d2b_tend_yr = None
-        self.t_depletion_yr = None
         self.z_depletion = None
 
         if not self.d2b_enabled:
             return
-
-        if self.d2b_z_start <= self.d2b_z_end:
-            raise ValueError("d2b_z_start must be greater than d2b_z_end.")
 
         # The draft's closed-form M_PBH(z), starting at d2b_z_start.
         self.d2b = Mass_analytic(
@@ -100,12 +88,7 @@ def make_pbh_population(
     d2b_mu_eV=1.73e-17,
     d2b_Mcloud_Msun=0.0,
     d2b_z_start=60.0,
-    d2b_z_end=6.0,
     d2b_enabled=True,
-    d2b_cloud_floor_Msun=1.0e-15,
-    d2b_rtol=1.0e-9,
-    d2b_atol=1.0e-12,
-    d2b_method="RK45",
     pop_extra=None,
 ):
     """Construct the Hektor+D2B source and its ARES callbacks."""
@@ -122,12 +105,7 @@ def make_pbh_population(
         d2b_mu_eV=d2b_mu_eV,
         d2b_Mcloud_Msun=d2b_Mcloud_Msun,
         d2b_z_start=d2b_z_start,
-        d2b_z_end=d2b_z_end,
         d2b_enabled=d2b_enabled,
-        d2b_cloud_floor_Msun=d2b_cloud_floor_Msun,
-        d2b_rtol=d2b_rtol,
-        d2b_atol=d2b_atol,
-        d2b_method=d2b_method,
     )
 
     heat_rate, ion_rate_igm = make_stateful_callbacks(model, Tk_of_z, xe_of_z)
